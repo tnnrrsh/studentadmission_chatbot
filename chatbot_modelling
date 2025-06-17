@@ -1,0 +1,110 @@
+# Install Dependencies
+!pip install transformers scikit-learn pandas malaya tqdm matplotlib
+# Imports
+import pandas as pd
+import numpy as np
+import torch
+import re
+from tqdm import tqdm
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from transformers import T5Tokenizer, T5EncoderModel
+import malaya
+import matplotlib.pyplot as plt
+
+# Load Data
+train_df = pd.read_csv("/content/Data Chatbot - Training.csv")
+test_df = pd.read_csv("/content/Data Chatbot - Testing.csv")
+
+# Load Malay Stopwords & Correction
+stopwords = malaya.text.function.get_stopwords()
+correction = malaya.spelling_correction.probability.Probability(corpus=stopwords)
+
+# Clean & Correct Function
+def clean_text(text):
+    text = str(text).lower()
+    try:
+        text = correction.correct(text)
+    except:
+        pass
+    text = re.sub(r"http\S+", "", text)
+    text = re.sub(r"[^\w\s]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    tokens = text.split()
+    tokens = [t for t in tokens if t not in stopwords]
+    return " ".join(tokens)
+
+# Clean Questions
+train_df["clean_question"] = train_df["question"].apply(clean_text)
+test_df["clean_question"] = test_df["question"].apply(clean_text)
+
+# TF-IDF
+tfidf_vectorizer = TfidfVectorizer()
+tfidf_matrix = tfidf_vectorizer.fit_transform(train_df["clean_question"])
+
+# T5 Embedding
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+tokenizer = T5Tokenizer.from_pretrained("malay-huggingface/t5-small-bahasa-cased")
+model = T5EncoderModel.from_pretrained("malay-huggingface/t5-small-bahasa-cased").to(device).eval()
+
+def get_embedding(text):
+    inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=128).to(device)
+    with torch.no_grad():
+        return model(**inputs).last_hidden_state.mean(dim=1).squeeze().cpu()
+
+tqdm.pandas()
+train_df["embedding"] = train_df["clean_question"].progress_apply(get_embedding)
+embedding_matrix = torch.stack(train_df["embedding"].tolist())
+
+# Save Cleaned Data with Embeddings
+train_df["embedding_list"] = train_df["embedding"].apply(lambda x: x.tolist())
+train_df[["question", "answer", "clean_question", "embedding_list"]].to_csv("chatbot_cleaned_with_embeddings.csv", index=False)
+print("Cleaned dataset with embeddings saved!")
+
+# Matching Function
+def chatbot_match(query, threshold=0.4, top_k=3, alpha=0.6, beta=0.4):
+    query_clean = clean_text(query)
+    tfidf_input = tfidf_vectorizer.transform([query_clean])
+    tfidf_scores = cosine_similarity(tfidf_input, tfidf_matrix)[0]
+    q_embed = get_embedding(query_clean)
+    deep_scores = cosine_similarity(q_embed.unsqueeze(0), embedding_matrix)[0]
+    combined_scores = (alpha * deep_scores) + (beta * tfidf_scores)
+    top_indices = combined_scores.argsort()[-top_k:][::-1]
+    return [train_df.iloc[i]["answer"] for i in top_indices if combined_scores[i] >= threshold]
+# Evaluation Function
+def evaluate_model(threshold=0.4, alpha=0.6, beta=0.4, top_k=3):
+    top1, topk = 0, 0
+    for idx, row in test_df.iterrows():
+        true_answer = row["answer"]
+        predictions = chatbot_match(row["question"], threshold=threshold, top_k=top_k, alpha=alpha, beta=beta)
+        if not predictions:
+            continue
+        if predictions[0] == true_answer:
+            top1 += 1
+        if true_answer in predictions:
+            topk += 1
+    total = len(test_df)
+    return (top1 / total) * 100, (topk / total) * 100
+# Run Tuning + Save Results
+thresholds = [0.1, 0.3, 0.4, 0.5]
+alphas = [0.3, 0.5, 0.7]
+betas = [0.3, 0.4, 0.5]
+
+results = []
+for t in thresholds:
+    for a in alphas:
+        for b in betas:
+            top1, topk = evaluate_model(threshold=t, alpha=a, beta=b, top_k=3)
+            results.append({
+                "threshold": t, "alpha": a, "beta": b,
+                "Top-1 Accuracy": top1, "Top-3 Accuracy": topk
+            })
+            print(f"Checked: threshold={t}, alpha={a}, beta={b} --> Top1: {top1:.2f}%, Top3: {topk:.2f}%")
+
+results_df = pd.DataFrame(results)
+results_df.to_csv("chatbot_tuning_results.csv", index=False)
+
+# Find Best Parameters
+best_row = results_df.loc[results_df["Top-1 Accuracy"].idxmax()]
+print("Best Parameters Based on Top-1 Accuracy:")
+print(best_row)
