@@ -3,11 +3,7 @@ pandas
 scikit-learn
 joblib
 transformers
-malaya
 sentencepiece
-torch
-pytorch
+malaya
 torch==2.5.1+cpu
 --index-url https://download.pytorch.org/whl/cpu
-
-
