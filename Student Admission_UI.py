@@ -14,7 +14,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 st.set_page_config(page_title="MARbot - UiTM Chatbot", layout="centered")
 
 # Load Data
-df = pd.read_csv("C:/Users/WIN10/Downloads/FYP/dataset/chatbot_cleaned_with_embeddings.csv")
+df = pd.read_csv("chatbot_cleaned_with_embeddings.csv")
 df["embedding"] = df["embedding_list"].apply(eval).apply(torch.tensor)
 embedding_matrix = torch.stack(df["embedding"].tolist())
 
