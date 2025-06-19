@@ -1,7 +1,7 @@
 streamlit
 pandas
 scikit-learn
-joblib
+torch==2.0.1
 transformers
-torch
-sentencepiece
+malaya
+joblib
